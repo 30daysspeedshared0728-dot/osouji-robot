@@ -1,0 +1,48 @@
+# Ubuntu/Linux 前提。カメラ・音声・X11 をコンテナに渡す。
+# 起動前に: xhost +local:docker
+services:
+  # ローカルLLM(Gemma)。初回は自動で pull される。
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # GPU がある場合は下を有効化(nvidia-container-toolkit 必要)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # Gemma を pull しておく使い捨てコンテナ
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=ollama:11434
+    entrypoint: ["/bin/sh", "-c", "sleep 3 && ollama pull gemma2:2b"]
+
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    depends_on:
+      - ollama
+    environment:
+      - DISPLAY=${DISPLAY}
+      - OLLAMA_URL=http://ollama:11434/api/generate
+    devices:
+      - "/dev/video0:/dev/video0"   # カメラ
+      - "/dev/snd:/dev/snd"          # 音声
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw   # X11(GUI表示)
+    # ジェスチャーを動かす。音声にしたい時は:
+    #   docker compose run --rm app python voice/voice_chat.py
+    command: ["python", "perception/gesture_control.py"]
+
+volumes:
+  ollama_data:

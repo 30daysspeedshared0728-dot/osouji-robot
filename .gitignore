@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Models / weights (大きいので入れない)
+*.pt
+*.onnx
+*.engine
+models/
+
+# Whisper / Ollama cache
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / recordings
+*.log
+recordings/
+*.mp4
+*.wav
+
+# Env
+.env
