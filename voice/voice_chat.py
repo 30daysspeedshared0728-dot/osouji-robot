@@ -49,9 +49,18 @@ COMMAND_KEYWORDS = {
 }
 
 
+# gesture_control.py と同じ橋渡し用ファイル。WSL2側のROS2ノードが読む。
+BRIDGE_FILE = os.path.join(os.path.expanduser("~"), "osouji_cmd.txt")
+
+
 def on_command(command):
-    """コマンド確定時のフック。今は print。将来 ROS2 publish に差し替える。"""
+    """print + ブリッジ用ファイルに書き出す(gestureと同じファイル)。"""
     print(f"[COMMAND] {command}")
+    try:
+        with open(BRIDGE_FILE, "w", encoding="utf-8") as f:
+            f.write(command)
+    except OSError:
+        pass
 
 
 def extract_command(text):

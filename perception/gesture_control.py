@@ -73,20 +73,32 @@ def count_extended_fingers(landmarks, handedness_label):
 
 
 def classify(num_fingers):
-    if num_fingers == 0:
-        return "STOP"   # グー -> とまれ
-    if num_fingers >= 5:
-        return "GO"     # パー -> すすめ
-    return None
+    # 親指判定が滑って5本と数えきれないことがあるため、余裕を持たせる。
+    if num_fingers <= 1:
+        return "STOP"   # グー(拳) -> とまれ
+    if num_fingers >= 4:
+        return "GO"     # パー(開手) -> すすめ
+    return None         # 2〜3本は判定保留
 
 
 COMMAND_JP = {"STOP": "とまれ", "GO": "すすめ"}
 COMMAND_COLOR = {"STOP": (0, 0, 255), "GO": (0, 200, 0)}
 
 
+# WSL2側のROS2ノードが読み取る「橋渡し用」ファイル(ASCIIパスで両OSが一致)
+BRIDGE_FILE = os.path.join(os.path.expanduser("~"), "osouji_cmd.txt")
+
+
 def on_command(command):
-    """コマンド確定時のフック。今は print。将来 ROS2 publish に差し替える。"""
+    """コマンド確定時のフック。print + ブリッジ用ファイルに書き出す。
+    WSL2側のROS2ノードがこのファイルを読んで turtlesim に流す。
+    将来Jetsonでは、ここを直接ROS2 publishに差し替える。"""
     print(f"[COMMAND] {command}  ({COMMAND_JP[command]})")
+    try:
+        with open(BRIDGE_FILE, "w", encoding="utf-8") as f:
+            f.write(command)
+    except OSError:
+        pass
 
 
 def draw_hand(frame, landmarks):
