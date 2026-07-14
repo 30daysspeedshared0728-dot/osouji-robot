@@ -1,57 +1,78 @@
 #!/usr/bin/env python3
 """
-gesture_control.py
-MediaPipe Hands で手を検出し、
+gesture_control.py  (MediaPipe Tasks API 版)
+
+新しい mediapipe (0.10.x, solutions 廃止済み) で動く版。
   グー(拳/指0本)  -> STOP  / とまれ
   パー(開手/指5本) -> GO    / すすめ
-を判定する。
 
-デバウンス(数フレーム連続で同じ判定が続いたら確定)付き。
-確定したコマンドは on_command() で外に出す。
-将来ここを ROS2 パブリッシャ差し替えで cmd_vel に繋ぐ。
+初回起動時に hand_landmarker.task モデルを自動ダウンロードします。
+確定したコマンドは on_command() で外に出す。将来ここを ROS2 publish に差し替え。
 
 使い方:
     python perception/gesture_control.py
     q キーで終了
 """
+import os
+import platform
+import urllib.request
+
+import numpy as np
 import cv2
 import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
-mp_hands = mp.solutions.hands
-mp_draw = mp.solutions.drawing_utils
-mp_styles = mp.solutions.drawing_styles
+# --- モデル(自動ダウンロード) ---
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+MODEL_PATH = os.path.join(MODEL_DIR, "hand_landmarker.task")
+MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+)
 
-# 指先ランドマークと、その第2関節(PIP)のインデックス
-# 親指は横方向で判定するので別扱い
+
+def ensure_model():
+    if not os.path.exists(MODEL_PATH):
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        print("hand_landmarker.task をダウンロード中...(初回のみ)")
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        print("ダウンロード完了")
+
+
+# 手の骨格を描くための接続(21ランドマーク)
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (17, 18), (18, 19), (19, 20),
+    (0, 17),
+]
+
 FINGER_TIPS = [8, 12, 16, 20]   # 人差し, 中, 薬, 小
 FINGER_PIPS = [6, 10, 14, 18]
 THUMB_TIP = 4
 THUMB_IP = 3
-THUMB_MCP = 2
 
 
 def count_extended_fingers(landmarks, handedness_label):
     """伸びている指の本数を数える(0=グー, 5=パー)。"""
     count = 0
-
-    # 人差し〜小指: 指先が第2関節より上(y が小さい)なら伸びている
     for tip, pip in zip(FINGER_TIPS, FINGER_PIPS):
         if landmarks[tip].y < landmarks[pip].y:
             count += 1
-
-    # 親指: 横方向で判定。手の左右で符号が変わる
+    # 親指は横方向。手の左右で符号が変わる
     if handedness_label == "Right":
         if landmarks[THUMB_TIP].x < landmarks[THUMB_IP].x:
             count += 1
-    else:  # Left
+    else:
         if landmarks[THUMB_TIP].x > landmarks[THUMB_IP].x:
             count += 1
-
     return count
 
 
 def classify(num_fingers):
-    """本数からコマンドへ。曖昧な時は None(=判定保留)。"""
     if num_fingers == 0:
         return "STOP"   # グー -> とまれ
     if num_fingers >= 5:
@@ -68,71 +89,90 @@ def on_command(command):
     print(f"[COMMAND] {command}  ({COMMAND_JP[command]})")
 
 
+def draw_hand(frame, landmarks):
+    h, w = frame.shape[:2]
+    pts = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
+    for a, b in HAND_CONNECTIONS:
+        cv2.line(frame, pts[a], pts[b], (0, 255, 0), 2)
+    for p in pts:
+        cv2.circle(frame, p, 4, (0, 0, 255), -1)
+
+
+def open_camera():
+    # Windows は DSHOW を指定すると開きが速く安定する。Linux(Jetson)は通常オープン。
+    if platform.system() == "Windows":
+        return cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    return cv2.VideoCapture(0)
+
+
 def main():
-    cap = cv2.VideoCapture(0)
+    ensure_model()
+    # 日本語を含むパスだと MediaPipe の内部(C++)がファイルを開けないため、
+    # Python 側でバイト列として読み込んで渡す(パス問題を回避)。
+    with open(MODEL_PATH, "rb") as f:
+        model_data = f.read()
+
+    options = vision.HandLandmarkerOptions(
+        base_options=python.BaseOptions(model_asset_buffer=model_data),
+        num_hands=1,
+        running_mode=vision.RunningMode.IMAGE,
+    )
+    detector = vision.HandLandmarker.create_from_options(options)
+
+    cap = open_camera()
     if not cap.isOpened():
-        print("カメラを開けません。/dev/video0 を確認してください。")
+        print("カメラを開けません。別アプリがカメラを使っていないか確認してください。")
         return
 
-    # デバウンス: 同じ判定が DEBOUNCE 回続いたら確定
     DEBOUNCE = 5
     candidate = None
     streak = 0
     current_command = None
 
-    with mp_hands.Hands(
-        model_complexity=0,
-        max_num_hands=1,
-        min_detection_confidence=0.6,
-        min_tracking_confidence=0.6,
-    ) as hands:
-        while cap.isOpened():
-            ok, frame = cap.read()
-            if not ok:
-                break
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
 
-            frame = cv2.flip(frame, 1)  # 鏡像にして直感的に
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb.flags.writeable = False
-            result = hands.process(rgb)
+        frame = cv2.flip(frame, 1)  # 鏡像
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(
+            image_format=mp.ImageFormat.SRGB,
+            data=np.ascontiguousarray(rgb),
+        )
+        result = detector.detect(mp_image)
 
-            detected = None
-            if result.multi_hand_landmarks:
-                hand_lms = result.multi_hand_landmarks[0]
-                label = result.multi_handedness[0].classification[0].label
-                n = count_extended_fingers(hand_lms.landmark, label)
-                detected = classify(n)
+        detected = None
+        if result.hand_landmarks:
+            lms = result.hand_landmarks[0]
+            label = result.handedness[0][0].category_name
+            n = count_extended_fingers(lms, label)
+            detected = classify(n)
+            draw_hand(frame, lms)
+            cv2.putText(frame, f"fingers: {n}", (10, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
 
-                mp_draw.draw_landmarks(
-                    frame, hand_lms, mp_hands.HAND_CONNECTIONS,
-                    mp_styles.get_default_hand_landmarks_style(),
-                    mp_styles.get_default_hand_connections_style(),
-                )
-                cv2.putText(frame, f"fingers: {n}", (10, 70),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+        # デバウンス
+        if detected == candidate and detected is not None:
+            streak += 1
+        else:
+            candidate = detected
+            streak = 1
 
-            # デバウンス処理
-            if detected == candidate and detected is not None:
-                streak += 1
-            else:
-                candidate = detected
-                streak = 1
+        if streak == DEBOUNCE and candidate != current_command and candidate is not None:
+            current_command = candidate
+            on_command(current_command)
 
-            if streak == DEBOUNCE and candidate != current_command and candidate is not None:
-                current_command = candidate
-                on_command(current_command)
+        if current_command:
+            label_txt = f"{current_command} / {COMMAND_JP[current_command]}"
+            color = COMMAND_COLOR[current_command]
+            cv2.rectangle(frame, (0, 0), (frame.shape[1], 40), color, -1)
+            cv2.putText(frame, label_txt, (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
 
-            # 画面表示
-            if current_command:
-                label_txt = f"{current_command} / {COMMAND_JP[current_command]}"
-                color = COMMAND_COLOR[current_command]
-                cv2.rectangle(frame, (0, 0), (frame.shape[1], 40), color, -1)
-                cv2.putText(frame, label_txt, (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-
-            cv2.imshow("osouji-robot | gesture (q=quit)", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+        cv2.imshow("osouji-robot | gesture (q=quit)", frame)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
 
     cap.release()
     cv2.destroyAllWindows()

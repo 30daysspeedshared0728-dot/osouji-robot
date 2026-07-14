@@ -1,9 +1,10 @@
 # --- ジェスチャー認識 ---
-mediapipe==0.10.14
-opencv-python==4.10.0.84
-numpy<2.0
+# バージョンは固定せず、環境に合う最新を入れる（Windows/Jetsonで入手可能なものが違うため）
+mediapipe
+opencv-python
+numpy
 
 # --- 音声会話 ---
-faster-whisper==1.0.3
-sounddevice==0.4.7
-requests==2.32.3
+faster-whisper
+sounddevice
+requests
