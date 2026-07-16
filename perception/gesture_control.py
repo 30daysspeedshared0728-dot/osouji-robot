@@ -50,35 +50,36 @@ HAND_CONNECTIONS = [
     (0, 17),
 ]
 
-FINGER_TIPS = [8, 12, 16, 20]   # 人差し, 中, 薬, 小
-FINGER_PIPS = [6, 10, 14, 18]
-THUMB_TIP = 4
-THUMB_IP = 3
+
+def _dist(a, b):
+    """2点間の距離(画面上の相対値)。"""
+    return ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5
 
 
-def count_extended_fingers(landmarks, handedness_label):
-    """伸びている指の本数を数える(0=グー, 5=パー)。"""
-    count = 0
-    for tip, pip in zip(FINGER_TIPS, FINGER_PIPS):
-        if landmarks[tip].y < landmarks[pip].y:
-            count += 1
-    # 親指は横方向。手の左右で符号が変わる
-    if handedness_label == "Right":
-        if landmarks[THUMB_TIP].x < landmarks[THUMB_IP].x:
-            count += 1
-    else:
-        if landmarks[THUMB_TIP].x > landmarks[THUMB_IP].x:
-            count += 1
-    return count
+# 手の開き具合のしきい値(自分の手・カメラに合わせてここを調整する)
+OPEN_STOP_MAX = 1.40   # これ未満 = グー(とまれ)
+OPEN_GO_MIN = 1.80     # これ超   = パー(すすめ)
 
 
-def classify(num_fingers):
-    # 親指判定が滑って5本と数えきれないことがあるため、余裕を持たせる。
-    if num_fingers <= 1:
+def hand_openness(landmarks):
+    """手の開き具合を1つの数値で表す(指を1本ずつ数えないので傾きに強い)。
+
+    手のサイズ(手首→中指の付け根)で正規化した、4本指の指先の平均距離。
+    グー ≈ 1.0前後 / パー ≈ 2.0前後 になる。
+    指が1本くらい傾いても、全体の平均なので結果が安定する。
+    """
+    wrist = landmarks[0]
+    scale = _dist(wrist, landmarks[9]) or 1e-6   # 中指の付け根までの距離=手のサイズ
+    tips = [8, 12, 16, 20]
+    return sum(_dist(wrist, landmarks[t]) for t in tips) / len(tips) / scale
+
+
+def classify(openness):
+    if openness < OPEN_STOP_MAX:
         return "STOP"   # グー(拳) -> とまれ
-    if num_fingers >= 4:
+    if openness > OPEN_GO_MIN:
         return "GO"     # パー(開手) -> すすめ
-    return None         # 2〜3本は判定保留
+    return None         # 中間(半開き)は保留
 
 
 COMMAND_JP = {"STOP": "とまれ", "GO": "すすめ"}
@@ -157,11 +158,11 @@ def main():
         detected = None
         if result.hand_landmarks:
             lms = result.hand_landmarks[0]
-            label = result.handedness[0][0].category_name
-            n = count_extended_fingers(lms, label)
-            detected = classify(n)
+            openness = hand_openness(lms)
+            detected = classify(openness)
             draw_hand(frame, lms)
-            cv2.putText(frame, f"fingers: {n}", (10, 70),
+            # 開き具合を画面表示(この数字を見てしきい値を調整する)
+            cv2.putText(frame, f"open: {openness:.2f}", (10, 70),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
 
         # デバウンス
