@@ -35,19 +35,26 @@ print("UART待受け開始。GO / STOP / CENTER を待ってます")
 buf = b""                      # 受信データを溜めるバッファ
 while True:
     if uart.any():             # 届いたバイトがあれば
-        buf += uart.read()     # 読んで溜める
+        data = uart.read()     # 読む(バイト列。データ無しならNone)
+        if data:               # 中身がある時だけ溜める(None対策＝安全＆警告も消える)
+            buf += data
         while b"\n" in buf:    # 改行が来たら=1コマンド分たまった
             line, buf = buf.split(b"\n", 1)
             cmd = line.strip().decode().upper()   # 文字に直して大文字化
             if cmd == "GO":
                 set_angle(180)
-                print("recv GO -> 180")
+                reply = "OK GO->180"
             elif cmd == "STOP":
                 set_angle(0)
-                print("recv STOP -> 0")
+                reply = "OK STOP->0"
             elif cmd == "CENTER":
                 set_angle(90)
-                print("recv CENTER -> 90")
+                reply = "OK CENTER->90"
             elif cmd:
-                print("unknown cmd:", cmd)
+                reply = "NG unknown:" + cmd    # 知らん命令は「NG」で返す
+            else:
+                reply = ""                     # 空行は無視
+            if reply:
+                uart.write((reply + "\n").encode())   # ★Jetsonへ返事を送り返す
+                print(reply)                   # Pico側の画面にも出す
     time.sleep(0.01)           # CPUを回しすぎない小休止

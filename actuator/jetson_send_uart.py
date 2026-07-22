@@ -16,11 +16,19 @@ BAUD = 115200                  # Pico側と同じ値にする
 ser = serial.Serial(PORT, BAUD, timeout=1)
 print(f"open {PORT} @ {BAUD}")
 
-# 3秒おきに GO→STOP→CENTER を送る
+# 3秒おきに GO→STOP→CENTER を送り、Picoからの返事を読む
 for cmd in ["GO", "STOP", "CENTER", "GO", "CENTER"]:
     ser.write((cmd + "\n").encode())   # 文字列＋改行 を送信
     print("sent:", cmd)
-    time.sleep(3)                       # サーボが動くのを見る間
+
+    # ★Picoからの返事を待って読む(timeout=1秒までブロック)
+    reply = ser.readline().decode(errors="replace").strip()
+    if reply:
+        print("   <- pico:", reply)    # 返事あり=Picoが受け取った確証
+    else:
+        print("   <- (返事なし。配線/TX-RX交差/Pico未起動を疑う)")
+
+    time.sleep(2.5)                     # サーボが動くのを見る間
 
 ser.close()
 print("done")
