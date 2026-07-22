@@ -105,7 +105,7 @@ def _dist(a, b):
 
 # 手の開き具合のしきい値(自分の手・カメラに合わせてここを調整する)
 OPEN_STOP_MAX = 1.40   # これ未満 = グー(とまれ)
-OPEN_GO_MIN = 1.80     # これ超   = パー(すすめ)
+OPEN_GO_MIN = 1.50     # これ超   = パー(すすめ)  ※カメラ/手に合わせ調整(1.80→1.50)
 
 
 def hand_openness(landmarks):
