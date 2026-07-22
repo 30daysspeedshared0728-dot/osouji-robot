@@ -22,6 +22,53 @@ import cv2
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from PIL import Image, ImageDraw, ImageFont
+
+# Jetson側の処理負荷を抑えるためのカメラ解像度
+CAM_WIDTH = 640
+CAM_HEIGHT = 480
+
+# cv2.putText は Hershey フォントのみでCJKを描けず文字化けするため、
+# 日本語表示はPillow + Noto Sans CJK JP で描画する。
+JP_FONT_CANDIDATES = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+]
+_JP_FONT_PATH = next((p for p in JP_FONT_CANDIDATES if os.path.exists(p)), None)
+_jp_font_cache = {}
+
+
+def _jp_font(size):
+    if _JP_FONT_PATH is None:
+        return None
+    font = _jp_font_cache.get(size)
+    if font is None:
+        font = ImageFont.truetype(_JP_FONT_PATH, size)
+        _jp_font_cache[size] = font
+    return font
+
+
+def draw_texts_jp(frame, items):
+    """日本語を含むテキストをまとめて描画する。
+
+    items: (text, (x, y), font_size, color_bgr) のリスト。
+    フォントが見つからない場合は cv2.putText にフォールバックする(文字化けするが最低限は表示される)。
+    """
+    font_size = max((it[2] for it in items), default=20)
+    font = _jp_font(font_size)
+    if font is None:
+        for text, org, size, color in items:
+            cv2.putText(frame, text, org, cv2.FONT_HERSHEY_SIMPLEX,
+                        size / 30, color, 2)
+        return frame
+
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb)
+    draw = ImageDraw.Draw(pil_img)
+    for text, org, size, color in items:
+        draw.text(org, text, font=_jp_font(size), fill=(color[2], color[1], color[0]))
+    rgb = np.array(pil_img)
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 # --- モデル(自動ダウンロード) ---
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
@@ -114,8 +161,13 @@ def draw_hand(frame, landmarks):
 def open_camera():
     # Windows は DSHOW を指定すると開きが速く安定する。Linux(Jetson)は通常オープン。
     if platform.system() == "Windows":
-        return cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    return cv2.VideoCapture(0)
+        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    else:
+        cap = cv2.VideoCapture(0)
+    # Jetsonでの処理負荷軽減のため解像度を落とす(カメラがサポートしていれば有効)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
+    return cap
 
 
 def main():
@@ -125,6 +177,9 @@ def main():
     with open(MODEL_PATH, "rb") as f:
         model_data = f.read()
 
+    # Tasks API (HandLandmarker) には旧 solutions API の model_complexity 引数は無く、
+    # モデルの複雑度はダウンロードするモデルファイル自体で決まる(hand_landmarkerはlite相当の1種類のみ)。
+    # 手を1つだけ検出することで負荷を抑える。
     options = vision.HandLandmarkerOptions(
         base_options=python.BaseOptions(model_asset_buffer=model_data),
         num_hands=1,
@@ -156,14 +211,14 @@ def main():
         result = detector.detect(mp_image)
 
         detected = None
+        text_items = []
         if result.hand_landmarks:
             lms = result.hand_landmarks[0]
             openness = hand_openness(lms)
             detected = classify(openness)
             draw_hand(frame, lms)
             # 開き具合を画面表示(この数字を見てしきい値を調整する)
-            cv2.putText(frame, f"open: {openness:.2f}", (10, 70),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+            text_items.append((f"open: {openness:.2f}", (10, 55), 22, (255, 255, 0)))
 
         # デバウンス
         if detected == candidate and detected is not None:
@@ -180,8 +235,10 @@ def main():
             label_txt = f"{current_command} / {COMMAND_JP[current_command]}"
             color = COMMAND_COLOR[current_command]
             cv2.rectangle(frame, (0, 0), (frame.shape[1], 40), color, -1)
-            cv2.putText(frame, label_txt, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+            text_items.append((label_txt, (10, 6), 26, (255, 255, 255)))
+
+        if text_items:
+            frame = draw_texts_jp(frame, text_items)
 
         cv2.imshow("osouji-robot | gesture (q=quit)", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
