@@ -18,6 +18,16 @@ models/
 .DS_Store
 Thumbs.db
 
+# IDE (個人設定・ローカルパスが入るので公開しない)
+.vs/
+.vscode/
+.micropico
+**/.micropico
+
+# 個人情報を含む引継ぎメモ(念のため。実体はリポジトリ外にある想定)
+引継ぎメモ.md
+*引継ぎ*.md
+
 # Logs / recordings
 *.log
 recordings/
