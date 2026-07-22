@@ -8,3 +8,6 @@ numpy
 faster-whisper
 sounddevice
 requests
+
+# --- アクチュエータ(UARTでPicoへ命令送信) ---
+pyserial
