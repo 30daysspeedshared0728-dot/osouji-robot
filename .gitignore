@@ -36,3 +36,7 @@ recordings/
 
 # Env
 .env
+
+# PlatformIO (ESP32ビルド成果物・でかいので入れない)
+.pio/
+firmware/esp32/.pio/
