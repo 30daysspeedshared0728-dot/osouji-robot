@@ -53,9 +53,43 @@ COMMAND_KEYWORDS = {
 BRIDGE_FILE = os.path.join(os.path.expanduser("~"), "osouji_cmd.txt")
 
 
+# --- UART: 確定コマンドをPicoへ送り、サーボを動かす ---
+# gesture_control.py と全く同じ仕組み。声で出したコマンドをPicoへ送る本線。
+try:
+    import serial  # pyserial (無くても音声認識だけは動くようにする)
+except ImportError:
+    serial = None
+
+UART_PORT = "/dev/ttyTHS1"   # Jetson 40ピンのUART(ピン8/10)。環境で違えば変更。
+UART_BAUD = 115200           # Pico側(pico_uart_servo.py)と必ず同じ値。
+_uart = None                 # 実際の接続。main() の init_uart() で開く。
+
+
+def init_uart():
+    """Picoへの送信用UARTを開く。失敗しても止めない(音声認識だけでも動くように)。"""
+    global _uart
+    if serial is None:
+        print("[UART] pyserial 未導入のため送信オフ (pip install pyserial)")
+        return
+    try:
+        _uart = serial.Serial(UART_PORT, UART_BAUD, timeout=0.1)
+        print(f"[UART] {UART_PORT} を開いた -> Picoへ命令を送ります")
+    except Exception as e:
+        _uart = None
+        print(f"[UART] {UART_PORT} を開けず: {e} (UART送信なしで続行)")
+
+
 def on_command(command):
-    """print + ブリッジ用ファイルに書き出す(gestureと同じファイル)。"""
+    """print + UART送信 + ブリッジ用ファイル書き出し(gestureと同じ)。
+    声で出したコマンドが、UART経由でPicoのサーボを動かす本線。"""
     print(f"[COMMAND] {command}")
+    # ★Picoへ UART で送る(繋がっていれば)。ここが声→サーボの本線。
+    if _uart is not None:
+        try:
+            _uart.write((command + "\n").encode())
+        except Exception as e:
+            print(f"[UART] 送信失敗: {e}")
+    # 従来のブリッジ用ファイルにも残す(WSL2 ROS2用。害はない)
     try:
         with open(BRIDGE_FILE, "w", encoding="utf-8") as f:
             f.write(command)
@@ -125,6 +159,8 @@ def main():
     model = WhisperModel("small", device="cpu", compute_type="int8")
     print("準備完了。Ctrl+C で終了。\n")
 
+    init_uart()      # Picoへの送信路を開く(失敗しても止めずに続行)
+
     try:
         while True:
             audio = record_until_enter()
@@ -149,6 +185,9 @@ def main():
 
     except KeyboardInterrupt:
         print("\n終了します。おつかれさま!")
+    finally:
+        if _uart is not None:
+            _uart.close()
 
 
 if __name__ == "__main__":
