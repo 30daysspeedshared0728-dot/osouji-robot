@@ -168,7 +168,11 @@ def main():
                 print("(短すぎ。もう一度どうぞ)\n")
                 continue
 
-            segments, _ = model.transcribe(audio, language="ja", beam_size=1)
+            # vad_filter=True: 無音区間を自動でカット。
+            # Whisperが無音/短い音に対して「ご視聴ありがとうございました」等の
+            # 幻聴(ハルシネーション)を吐くのを大幅に抑える。
+            segments, _ = model.transcribe(audio, language="ja", beam_size=1,
+                                           vad_filter=True)
             text = "".join(seg.text for seg in segments).strip()
             if not text:
                 print("(聞き取れませんでした)\n")
