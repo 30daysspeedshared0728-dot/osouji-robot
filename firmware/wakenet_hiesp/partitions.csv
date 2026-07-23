@@ -1,0 +1,8 @@
+# XIAO ESP32S3 (8MB flash) 用パーティション表 ★ESP-SR/WakeNet モデル置き場つき
+# このファイルをスケッチと同じフォルダに置くと、arduino-esp32 が自動でコレを使う。
+# "model" という名前の区画にWakeNetモデル(srmodels.bin)が焼き込まれる。
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xf000,   0x1000,
+factory,    app,  factory, 0x10000,  0x300000,
+model,      data, spiffs,  0x310000, 0x4F0000,

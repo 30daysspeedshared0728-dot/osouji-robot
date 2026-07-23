@@ -149,7 +149,7 @@ const ei_impulse_t impulse_1067344_1 = {
     .project_name = "osouji-wake-word",
     .impulse_id = 1,
     .impulse_name = "Impulse #1",
-    .deploy_version = 1,
+    .deploy_version = 2,
 
     .nn_input_frame_size = 1287,
     .raw_sample_count = 32000,
