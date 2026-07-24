@@ -495,15 +495,30 @@ def describe_with_vlm():
         if not ok2:
             return None
         b64 = base64.b64encode(buf.tobytes()).decode()
+        # ★moondreamは英語ベースの小型VLM。日本語で聞くとゴミ("スキップ"等)を返すので
+        #   英語で説明させる→次にGemmaで日本語の話し言葉へ言い換える(=言語カスケードの2段目)。
         resp = requests.post(
             OLLAMA_URL,
             json={"model": VLM_MODEL,
-                  "prompt": "この画像に何が写っているか、日本語で親しみやすく短く説明して。記号や英語は使わない。",
+                  "prompt": "Describe what is in this image in one or two short, plain sentences.",
                   "images": [b64], "stream": False},
             timeout=120,   # モデル切替(スワップ)で遅いことがある
         )
         resp.raise_for_status()
-        return resp.json().get("response", "").strip()
+        en = resp.json().get("response", "").strip()
+        if not en:
+            return None
+        print(f"[VLM] moondream(英語): {en}")
+        # 英語→日本語へ言い換え(Gemma)。Ollama不通ならせめて英語をそのまま返す。
+        try:
+            ja = _ollama_generate(
+                "次の英語を、親しみやすい日本語の話し言葉で短く言い換えて。"
+                "記号や英語は使わない。\n\n" + en + "\n\n日本語:",
+                timeout=60,
+            ).strip()
+            return ja or en
+        except requests.exceptions.RequestException:
+            return en
     except requests.exceptions.RequestException as e:
         print(f"[VLM] moondream呼べず: {e} (ollama pull moondream 済み?)")
         return None
