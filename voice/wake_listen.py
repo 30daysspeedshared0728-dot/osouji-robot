@@ -454,9 +454,17 @@ def look_objects():
         if not ok:
             print("[YOLO] フレームが取れなかった")
             return None
+        H, W = frame.shape[:2]
         res = _yolo(frame, device="cpu", verbose=False)[0]
-        items = [(_yolo.names[int(c)], float(s))
-                 for c, s in zip(res.boxes.cls, res.boxes.conf)]
+        items = []
+        for c, s, box in zip(res.boxes.cls, res.boxes.conf, res.boxes.xyxy):
+            x1, y1, x2, y2 = [float(v) for v in box]
+            cx   = (x1 + x2) / 2 / W                      # 横位置(0=左, 1=右)
+            area = (x2 - x1) * (y2 - y1) / (W * H)        # 画面に占める割合=近さ
+            horiz = "左" if cx < 0.34 else ("右" if cx > 0.66 else "中央")
+            depth = "手前" if area > 0.15 else ("奥" if area < 0.05 else "")
+            pos   = (depth + horiz) if depth else horiz   # 例: "手前右" / "中央"
+            items.append((_yolo.names[int(c)], float(s), pos))
         items.sort(key=lambda x: -x[1])
         return items
     except Exception as e:
@@ -537,16 +545,18 @@ def main():
             if want_look:
                 items = look_objects()
                 if items:
-                    print("[YOLO] 検出: " + "、".join(f"{n}({c:.2f})" for n, c in items[:5]))
-                    top_name, top_conf = items[0]
+                    print("[YOLO] 検出: " + "、".join(f"{p}{n}({c:.2f})" for n, c, p in items[:5]))
+                    top_name, top_conf, top_pos = items[0]
                     fixed, go = teach_confirm("yolo", top_name, top_conf < YOLO_CONF_MIN)  # ティーチング層に差す
                     if not go:
                         print("(取消。待機に戻ります)\n")
                         continue
-                    seen = "、".join([fixed] + [n for n, _ in items[1:4]])
+                    # 位置つきで説明用テキストを作る(例:「手前右にコップ、中央に人」)＝Gemmaが空間説明できる
+                    parts = [f"{top_pos}に{fixed}"] + [f"{p}に{n}" for n, _, p in items[1:4]]
+                    seen = "、".join(parts)
                 else:
                     seen = "何も見当たりません"
-                reply = ask_gemma(f"(あなたはカメラで今これが見えています: {seen}) 目の前の様子を短く教えて")
+                reply = ask_gemma(f"(あなたはカメラで今こう見えています: {seen}) 目の前の様子を短く説明して")
             elif USE_GEMMA:
                 reply = ask_gemma(text)
 
