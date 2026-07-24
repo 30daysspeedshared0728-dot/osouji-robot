@@ -512,10 +512,13 @@ def describe_with_vlm():
         # 英語→日本語へ言い換え(Gemma)。Ollama不通ならせめて英語をそのまま返す。
         try:
             ja = _ollama_generate(
-                "次の英語を、親しみやすい日本語の話し言葉で短く言い換えて。"
-                "記号や英語は使わない。\n\n" + en + "\n\n日本語:",
+                "次の英語を、親しみやすい日本語の話し言葉で一文だけに言い換えて。"
+                "解説・注釈・箇条書き・英語・ローマ字は一切つけず、日本語の一文だけを返す。"
+                "\n\n" + en + "\n\n日本語(一文だけ):",
                 timeout=60,
             ).strip()
+            # 保険: Gemmaが解説を足しても最初の1行(＝本文)だけ拾う
+            ja = ja.splitlines()[0].strip() if ja else ""
             return ja or en
         except requests.exceptions.RequestException:
             return en
