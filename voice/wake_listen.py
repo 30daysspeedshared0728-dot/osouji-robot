@@ -121,6 +121,11 @@ LOG_FILE = os.path.join(os.path.expanduser("~"), "osouji_log.jsonl")  # 会話�
 TEACH_MODE      = os.environ.get("TEACH_MODE", "uncertain")  # "always"=毎回聞く / "uncertain"=自信が低い時だけ / "off"=聞かない
 CONFIRM_LOGPROB = float(os.environ.get("CONFIRM_LOGPROB", "-1.0"))  # これ未満=怪しい＝uncertainで確認。0に近づけるほど確認が増える(例 CONFIRM_LOGPROB=-0.3)
 
+# --- 「これ何?」視覚クエリ(カメラ→YOLO→Gemma) ---
+CAM_INDEX       = int(os.environ.get("CAM", "0"))   # 「これ何?」で使うカメラ番号
+YOLO_CONF_MIN   = 0.50    # YOLO検出スコアがこれ未満なら"自信ない"＝ティーチング層で確認
+VISION_KEYWORDS = ("これなに", "これ何", "なにこれ", "何これ", "何が見え", "見えてる", "なに見え", "なに持っ")
+
 
 # ============================================================
 # == UART: 確定コマンドを Pico へ送ってサーボを動かす ==
@@ -370,16 +375,18 @@ def log_event(user_text, command, reply, evaluation=None):
         print(f"[LOG] 記録できず: {e}")
 
 
-def teach_confirm(source, guess, confidence):
+def teach_confirm(source, guess, low_conf):
     """ティーチング層＝全サブシステム共通の“人間に教わる”入口。
-    source: 'asr'/'yolo'/'arm' 等。guess: 予測。confidence: 自信度(0に近いほど確信)。
+    source: 'asr'/'yolo'/'arm' 等。guess: 予測。low_conf: そのサブシステムが『自信ない』か(bool)。
+    ★自信度のスケールは各サブシステムで違う(ASR=logprob / YOLO=スコア)ので、判定は呼ぶ側でやり、
+      この層には bool だけ渡す＝層は共通のまま使い回せる。
     TEACH_MODE に従って確認し、訂正されたら記憶に“教えた正解”として残す。
       always    … 毎回聞く(教育セッション)
       uncertain … 自信が低い時だけ聞く(通常運転＝能動学習)
       off       … 聞かない(自律)
     戻り値: (確定した内容, 続行するか)。x取消なら (None, False)。
     ※今はキーボード確認。将来ジェスチャー(👍/👎)や画面(?)でも受ける＝マルチモーダル。"""
-    ask = (TEACH_MODE == "always") or (TEACH_MODE == "uncertain" and confidence < CONFIRM_LOGPROB)
+    ask = (TEACH_MODE == "always") or (TEACH_MODE == "uncertain" and low_conf)
     if not ask:
         return guess, True
     try:
@@ -392,6 +399,44 @@ def teach_confirm(source, guess, confidence):
         return None, False
     log_event(guess, None, None, evaluation=f"teach:{source}:{ans}")   # 人間が教えた訂正を記憶
     return ans, True
+
+
+# ============================================================
+# == 「これ何?」= カメラ→YOLO→Gemma (視覚クエリ) ==
+# ============================================================
+_yolo = None   # YOLOモデルは初回呼び出し時だけ読み込む(起動を軽く保つ)
+
+def is_vision_query(text):
+    """「これ何?」系の問いかけかどうか。"""
+    return any(k in text for k in VISION_KEYWORDS)
+
+def look_objects():
+    """カメラを1枚撮ってYOLO(CPU)で物体認識。(ラベル,自信度)を信頼度降順で返す。失敗はNone。
+    ★GPUは使わない＝Gemmaと統合メモリを取り合わない＆JetsonのNVMLバグを回避。"""
+    global _yolo
+    try:
+        import cv2
+        if _yolo is None:
+            from ultralytics import YOLO
+            print("[YOLO] 初回ロード中…(少し待つ)")
+            _yolo = YOLO("yolov8n.pt")
+        cap = cv2.VideoCapture(CAM_INDEX)
+        if not cap.isOpened():
+            print(f"[YOLO] カメラ({CAM_INDEX})が開けない")
+            return None
+        ok, frame = cap.read()
+        cap.release()
+        if not ok:
+            print("[YOLO] フレームが取れなかった")
+            return None
+        res = _yolo(frame, device="cpu", verbose=False)[0]
+        items = [(_yolo.names[int(c)], float(s))
+                 for c, s in zip(res.boxes.cls, res.boxes.conf)]
+        items.sort(key=lambda x: -x[1])
+        return items
+    except Exception as e:
+        print(f"[YOLO] 認識できず: {e} (ultralytics未導入かも)")
+        return None
 
 
 # ============================================================
@@ -446,12 +491,33 @@ def main():
             print(f"🗣  あなた: {text}   [{reason} / 自信度={conf:.2f}]")
 
             # --- 3b. ティーチング層: 怪しい時(or alwaysモード)は人間に確認 ---
-            text, go = teach_confirm("asr", text, conf)
+            text, go = teach_confirm("asr", text, conf < CONFIRM_LOGPROB)
             if not go:
                 print("(取消。待機に戻ります)\n")
                 continue
 
-            # --- 4. コマンド抽出 -> UART -> サーボ ---
+            # --- 4. 「これ何?」= 視覚クエリなら カメラ→YOLO→Gemma ---
+            if is_vision_query(text):
+                items = look_objects()
+                if items:
+                    print("[YOLO] 検出: " + "、".join(f"{n}({c:.2f})" for n, c in items[:5]))
+                    top_name, top_conf = items[0]
+                    # ティーチング層に差す(source=yolo)。スコアが低い=自信ない、を bool で渡す。
+                    fixed, go = teach_confirm("yolo", top_name, top_conf < YOLO_CONF_MIN)
+                    if not go:
+                        print("(取消。待機に戻ります)\n")
+                        continue
+                    seen = "、".join([fixed] + [n for n, _ in items[1:4]])
+                else:
+                    seen = "何も見当たりません"
+                reply = ask_gemma(f"(あなたはカメラで今これが見えています: {seen}) 目の前に何があるか短く教えて")
+                print(f"🤖 オソウジくん: {reply}")
+                speak(reply)
+                log_event(text, "LOOK", reply)   # 見たことも記憶に残す
+                print("--- 待機に戻ります(「Hi ESP」でまた起こして) ---\n")
+                continue
+
+            # --- 5. コマンド抽出 -> UART -> サーボ ---
             cmd = extract_command(text)
             if cmd:
                 on_command(cmd)
