@@ -117,7 +117,9 @@ BRIDGE_FILE = os.path.join(os.path.expanduser("~"), "osouji_cmd.txt")  # WSL2 RO
 
 # --- 記憶(ログ) / human-in-the-loop ---
 LOG_FILE = os.path.join(os.path.expanduser("~"), "osouji_log.jsonl")  # 会話・命令の記憶(1行1件JSON)。学ぶロボの土台=外付けの記憶。
-HITL     = os.environ.get("HITL", "0") == "1"  # HITL=1 で毎回、人間の評価を聞いてログに残す(学習の種)
+# --- ティーチング層(全サブシステム共通の設計。今は音声版。将来YOLO/アームも同じ層に差す) ---
+TEACH_MODE      = os.environ.get("TEACH_MODE", "uncertain")  # "always"=毎回聞く / "uncertain"=自信が低い時だけ / "off"=聞かない
+CONFIRM_LOGPROB = -1.0    # Whisperの自信度(avg_logprob)がこれ未満なら怪しい＝uncertainモードで確認(0に近いほど自信あり)
 
 
 # ============================================================
@@ -368,22 +370,28 @@ def log_event(user_text, command, reply, evaluation=None):
         print(f"[LOG] 記録できず: {e}")
 
 
-def ask_human_feedback():
-    """human-in-the-loop: 直前のやり取りへの人間の評価を1つ受け取る。
-    Enter=良い / x=ダメ / s=スキップ / それ以外の文字=自由コメント。
-    集めた評価は記憶に残り、将来“周囲の評価から学ぶ”材料になる。"""
+def teach_confirm(source, guess, confidence):
+    """ティーチング層＝全サブシステム共通の“人間に教わる”入口。
+    source: 'asr'/'yolo'/'arm' 等。guess: 予測。confidence: 自信度(0に近いほど確信)。
+    TEACH_MODE に従って確認し、訂正されたら記憶に“教えた正解”として残す。
+      always    … 毎回聞く(教育セッション)
+      uncertain … 自信が低い時だけ聞く(通常運転＝能動学習)
+      off       … 聞かない(自律)
+    戻り値: (確定した内容, 続行するか)。x取消なら (None, False)。
+    ※今はキーボード確認。将来ジェスチャー(👍/👎)や画面(?)でも受ける＝マルチモーダル。"""
+    ask = (TEACH_MODE == "always") or (TEACH_MODE == "uncertain" and confidence < CONFIRM_LOGPROB)
+    if not ask:
+        return guess, True
     try:
-        ans = input("🧑‍🏫 評価 [Enter=良い / x=ダメ / s=スキップ / 文字=コメント]: ").strip()
+        ans = input(f"❓[{source}]『{guess}』でええ？ [Enter=はい / 正しい内容を入力 / x=取消]: ").strip()
     except EOFError:
-        return None
+        return guess, True
     if ans == "":
-        return "good"
-    low = ans.lower()
-    if low == "s":
-        return None
-    if low == "x":
-        return "bad"
-    return ans   # 自由コメント(例:「もっと短く」)
+        return guess, True
+    if ans.lower() == "x":
+        return None, False
+    log_event(guess, None, None, evaluation=f"teach:{source}:{ans}")   # 人間が教えた訂正を記憶
+    return ans, True
 
 
 # ============================================================
@@ -425,14 +433,23 @@ def main():
                 print(f"({reason}。何も認識せず待機に戻ります)\n")
                 continue
 
-            # --- 3. 認識 ---
+            # --- 3. 認識(＋自信度) ---
             segments, _ = model.transcribe(audio, language="ja", beam_size=1,
                                            vad_filter=True)
-            text = "".join(seg.text for seg in segments).strip()
+            seg_list = list(segments)
+            text = "".join(s.text for s in seg_list).strip()
             if not text:
                 print("(聞き取れませんでした)\n")
                 continue
-            print(f"🗣  あなた: {text}   [{reason}]")
+            # 自信度＝各セグメントの avg_logprob の平均(0に近いほど自信あり)
+            conf = sum(s.avg_logprob for s in seg_list) / len(seg_list) if seg_list else -9.9
+            print(f"🗣  あなた: {text}   [{reason} / 自信度={conf:.2f}]")
+
+            # --- 3b. ティーチング層: 怪しい時(or alwaysモード)は人間に確認 ---
+            text, go = teach_confirm("asr", text, conf)
+            if not go:
+                print("(取消。待機に戻ります)\n")
+                continue
 
             # --- 4. コマンド抽出 -> UART -> サーボ ---
             cmd = extract_command(text)
@@ -446,9 +463,8 @@ def main():
                 print(f"🤖 オソウジくん: {reply}")
                 speak(reply)          # ★ここで声に出す(会話ループ完成)
 
-            # --- 6. 記憶(ログ) + human-in-the-loop 評価 ---
-            evaluation = ask_human_feedback() if HITL else None
-            log_event(text, cmd, reply, evaluation)   # 毎回のやり取りを記憶に残す
+            # --- 6. 記憶(ログ): 毎回のやり取りを記憶に残す ---
+            log_event(text, cmd, reply)
 
             print("--- 待機に戻ります(「Hi ESP」でまた起こして) ---\n")
 
