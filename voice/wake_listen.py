@@ -35,6 +35,8 @@ import glob
 import time
 import queue
 import re
+import json
+from datetime import datetime
 
 import numpy as np
 import sounddevice as sd
@@ -112,6 +114,10 @@ COMMAND_KEYWORDS = {
 }
 
 BRIDGE_FILE = os.path.join(os.path.expanduser("~"), "osouji_cmd.txt")  # WSL2 ROS2用(害なし)
+
+# --- 記憶(ログ) / human-in-the-loop ---
+LOG_FILE = os.path.join(os.path.expanduser("~"), "osouji_log.jsonl")  # 会話・命令の記憶(1行1件JSON)。学ぶロボの土台=外付けの記憶。
+HITL     = os.environ.get("HITL", "0") == "1"  # HITL=1 で毎回、人間の評価を聞いてログに残す(学習の種)
 
 
 # ============================================================
@@ -342,6 +348,45 @@ def speak(text):
 
 
 # ============================================================
+# == 記憶(ログ) と human-in-the-loop ==
+# ============================================================
+def log_event(user_text, command, reply, evaluation=None):
+    """1回のやり取りを記憶(JSONL)に1行追記する。
+    これが“学ぶロボ”の土台＝オットーのノート(外付けの記憶)。
+    後で「赤いの取れ→過去ログ参照」や評価からの学習は、全部ここから生える。"""
+    rec = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "user": user_text,       # 聞き取った言葉
+        "command": command,      # 抽出した移動コマンド(無ければNone)
+        "reply": reply,          # Gemmaの返事(無ければNone)
+        "eval": evaluation,      # 人間の評価(HITL。無ければNone)
+    }
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[LOG] 記録できず: {e}")
+
+
+def ask_human_feedback():
+    """human-in-the-loop: 直前のやり取りへの人間の評価を1つ受け取る。
+    Enter=良い / x=ダメ / s=スキップ / それ以外の文字=自由コメント。
+    集めた評価は記憶に残り、将来“周囲の評価から学ぶ”材料になる。"""
+    try:
+        ans = input("🧑‍🏫 評価 [Enter=良い / x=ダメ / s=スキップ / 文字=コメント]: ").strip()
+    except EOFError:
+        return None
+    if ans == "":
+        return "good"
+    low = ans.lower()
+    if low == "s":
+        return None
+    if low == "x":
+        return "bad"
+    return ans   # 自由コメント(例:「もっと短く」)
+
+
+# ============================================================
 # == メインループ ==
 # ============================================================
 def main():
@@ -395,10 +440,15 @@ def main():
                 on_command(cmd)
 
             # --- 5. Gemma 返事 -> スピーカーで喋る ---
+            reply = None
             if USE_GEMMA:
                 reply = ask_gemma(text)
                 print(f"🤖 オソウジくん: {reply}")
                 speak(reply)          # ★ここで声に出す(会話ループ完成)
+
+            # --- 6. 記憶(ログ) + human-in-the-loop 評価 ---
+            evaluation = ask_human_feedback() if HITL else None
+            log_event(text, cmd, reply, evaluation)   # 毎回のやり取りを記憶に残す
 
             print("--- 待機に戻ります(「Hi ESP」でまた起こして) ---\n")
 
