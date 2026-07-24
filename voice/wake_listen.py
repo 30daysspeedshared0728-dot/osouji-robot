@@ -91,6 +91,7 @@ WHISPER_SIZE     = "small"          # Jetson が重ければ "base" に落とす
 OLLAMA_URL       = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL     = "gemma2:2b"
 USE_GEMMA        = True             # JetsonにOllama導入済み＝雑談ON。Falseにするとコマンドのみ。
+USE_LLM_ROUTER   = os.environ.get("ROUTER", "1") == "1"  # Gemmaに「今見る必要ある?」を判定させる。ROUTER=0でキーワードのみ
 
 # --- TTS(返事をスピーカーで喋る) ---
 TTS_ENGINE       = os.environ.get("TTS_ENGINE", "espeak")  # "espeak"(即・粗い)/"openjtalk"(要pyopenjtalk・日本語正しく読む)。実行時 TTS_ENGINE=openjtalk で切替
@@ -296,18 +297,42 @@ def record_until_silence():
 # ============================================================
 # == Gemma(Ollama)返事 ==
 # ============================================================
+def _ollama_generate(prompt, timeout=60):
+    """OllamaにプロンプトをそのままPOSTして応答テキストを返す(低レベル)。"""
+    resp = requests.post(
+        OLLAMA_URL,
+        json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp.json().get("response", "").strip()
+
+
 def ask_gemma(user_text):
+    """オソウジくんの人格で返事を作る。"""
     prompt = f"{SYSTEM_PROMPT}\n\nユーザー: {user_text}\nオソウジくん:"
     try:
-        resp = requests.post(
-            OLLAMA_URL,
-            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
-            timeout=60,
-        )
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip()
+        return _ollama_generate(prompt)
     except requests.exceptions.RequestException as e:
         return f"(Ollama に繋がりませんでした: {e})"
+
+
+def decide_intent(text):
+    """LLMルーター＝Gemmaに『今カメラで見る必要があるか』を判定させる(2階建ての“技能選択”)。
+    出力は1語に固定(LOOK/CHAT)＋外れたらCHATに倒す(安全側)＝小型モデルでも堅い。
+    返り値: 'look' か 'chat'。"""
+    prompt = (
+        "あなたはロボットの意図判定器です。次の発話が、いま目の前をカメラで見る必要があるものなら "
+        "LOOK、そうでない普通の会話や移動指示なら CHAT と、1語だけ返してください。\n"
+        "『これ何?』→LOOK\n『そこにあるやつ取って』→LOOK\n『何か落ちてない?』→LOOK\n"
+        "『目の前に何がある?』→LOOK\n『今日の天気は?』→CHAT\n『こんにちは』→CHAT\n『進め』→CHAT\n"
+        f"『{text}』→"
+    )
+    try:
+        ans = _ollama_generate(prompt, timeout=30)
+    except requests.exceptions.RequestException:
+        return "chat"   # Ollama不通なら見に行かない(安全側)
+    return "look" if "LOOK" in ans.upper() else "chat"
 
 
 # ============================================================
@@ -496,41 +521,41 @@ def main():
                 print("(取消。待機に戻ります)\n")
                 continue
 
-            # --- 4. 「これ何?」= 視覚クエリなら カメラ→YOLO→Gemma ---
-            if is_vision_query(text):
+            # --- 4. 移動コマンド(キーワード高速パス=反応層。LLM非経由で即サーボ) ---
+            cmd = extract_command(text)
+            if cmd:
+                on_command(cmd)
+
+            # --- 5. 見るべきか判定: キーワード or Gemmaルーター(2階建ての“技能選択”) ---
+            #   「これ何?」等の明示ワードは即LOOK。それ以外はGemmaに判定させる(移動指示の時は聞かない)。
+            want_look = is_vision_query(text)
+            if (not want_look) and USE_LLM_ROUTER and USE_GEMMA and (not cmd):
+                want_look = (decide_intent(text) == "look")
+
+            # --- 6. 返事: 見る(カメラ→YOLO→Gemma) or 会話(Gemma) ---
+            reply = None
+            if want_look:
                 items = look_objects()
                 if items:
                     print("[YOLO] 検出: " + "、".join(f"{n}({c:.2f})" for n, c in items[:5]))
                     top_name, top_conf = items[0]
-                    # ティーチング層に差す(source=yolo)。スコアが低い=自信ない、を bool で渡す。
-                    fixed, go = teach_confirm("yolo", top_name, top_conf < YOLO_CONF_MIN)
+                    fixed, go = teach_confirm("yolo", top_name, top_conf < YOLO_CONF_MIN)  # ティーチング層に差す
                     if not go:
                         print("(取消。待機に戻ります)\n")
                         continue
                     seen = "、".join([fixed] + [n for n, _ in items[1:4]])
                 else:
                     seen = "何も見当たりません"
-                reply = ask_gemma(f"(あなたはカメラで今これが見えています: {seen}) 目の前に何があるか短く教えて")
+                reply = ask_gemma(f"(あなたはカメラで今これが見えています: {seen}) 目の前の様子を短く教えて")
+            elif USE_GEMMA:
+                reply = ask_gemma(text)
+
+            if reply is not None:
                 print(f"🤖 オソウジくん: {reply}")
                 speak(reply)
-                log_event(text, "LOOK", reply)   # 見たことも記憶に残す
-                print("--- 待機に戻ります(「Hi ESP」でまた起こして) ---\n")
-                continue
 
-            # --- 5. コマンド抽出 -> UART -> サーボ ---
-            cmd = extract_command(text)
-            if cmd:
-                on_command(cmd)
-
-            # --- 5. Gemma 返事 -> スピーカーで喋る ---
-            reply = None
-            if USE_GEMMA:
-                reply = ask_gemma(text)
-                print(f"🤖 オソウジくん: {reply}")
-                speak(reply)          # ★ここで声に出す(会話ループ完成)
-
-            # --- 6. 記憶(ログ): 毎回のやり取りを記憶に残す ---
-            log_event(text, cmd, reply)
+            # --- 7. 記憶(ログ): 毎回のやり取りを記憶に残す ---
+            log_event(text, cmd or ("LOOK" if want_look else None), reply)
 
             print("--- 待機に戻ります(「Hi ESP」でまた起こして) ---\n")
 
