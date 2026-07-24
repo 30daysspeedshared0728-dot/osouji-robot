@@ -126,6 +126,9 @@ CONFIRM_LOGPROB = float(os.environ.get("CONFIRM_LOGPROB", "-1.0"))  # これ未�
 CAM_INDEX       = int(os.environ.get("CAM", "0"))   # 「これ何?」で使うカメラ番号
 YOLO_CONF_MIN   = 0.50    # YOLO検出スコアがこれ未満なら"自信ない"＝ティーチング層で確認
 VISION_KEYWORDS = ("これなに", "これ何", "なにこれ", "何これ", "何が見え", "見えてる", "なに見え", "なに持っ")
+# 「詳しく説明して」系は画像を丸ごとVLM(moondream)に見せる＝カスケードの“高い専門家”の段
+VLM_MODEL       = os.environ.get("VLM_MODEL", "moondream")   # 画像を見て情景を語る小型VLM
+VLM_KEYWORDS    = ("詳しく", "くわしく", "説明して", "どんな様子", "様子", "何が起き", "なにが起き", "状況", "描写")
 
 
 # ============================================================
@@ -472,6 +475,43 @@ def look_objects():
         return None
 
 
+def describe_with_vlm():
+    """カスケードの重い段＝画像そのものをVLM(moondream)に見せて情景を日本語で説明させる。
+    YOLOがラベルだけなのに対し、これは“状況”を語れる(散らかった机にカップとリモコン…等)。
+    失敗時はNone(ollama pull moondream 済みか/メモリを確認)。"""
+    try:
+        import cv2
+        import base64
+        cap = cv2.VideoCapture(CAM_INDEX)
+        if not cap.isOpened():
+            print(f"[VLM] カメラ({CAM_INDEX})が開けない")
+            return None
+        ok, frame = cap.read()
+        cap.release()
+        if not ok:
+            print("[VLM] フレームが取れなかった")
+            return None
+        ok2, buf = cv2.imencode(".jpg", frame)
+        if not ok2:
+            return None
+        b64 = base64.b64encode(buf.tobytes()).decode()
+        resp = requests.post(
+            OLLAMA_URL,
+            json={"model": VLM_MODEL,
+                  "prompt": "この画像に何が写っているか、日本語で親しみやすく短く説明して。記号や英語は使わない。",
+                  "images": [b64], "stream": False},
+            timeout=120,   # モデル切替(スワップ)で遅いことがある
+        )
+        resp.raise_for_status()
+        return resp.json().get("response", "").strip()
+    except requests.exceptions.RequestException as e:
+        print(f"[VLM] moondream呼べず: {e} (ollama pull moondream 済み?)")
+        return None
+    except Exception as e:
+        print(f"[VLM] 失敗: {e}")
+        return None
+
+
 # ============================================================
 # == メインループ ==
 # ============================================================
@@ -535,14 +575,19 @@ def main():
                 on_command(cmd)
 
             # --- 5. 見るべきか判定: キーワード or Gemmaルーター(2階建ての“技能選択”) ---
-            #   「これ何?」等の明示ワードは即LOOK。それ以外はGemmaに判定させる(移動指示の時は聞かない)。
-            want_look = is_vision_query(text)
+            #   「これ何?」等=即LOOK。「詳しく説明して」等=VLMへエスカレーション。それ以外はGemma判定。
+            want_detail = any(k in text for k in VLM_KEYWORDS)   # 情景を"描写"してほしい系
+            want_look = is_vision_query(text) or want_detail
             if (not want_look) and USE_LLM_ROUTER and USE_GEMMA and (not cmd):
                 want_look = (decide_intent(text) == "look")
 
             # --- 6. 返事: 見る(カメラ→YOLO→Gemma) or 会話(Gemma) ---
             reply = None
-            if want_look:
+            if want_look and want_detail:
+                # ★カスケードの重い段: 画像そのものをVLM(moondream)に見せて情景を語らせる
+                print("[VLM] moondreamで情景説明…(モデル切替で数秒待つことあり)")
+                reply = describe_with_vlm() or "うまく見れんかったわ"
+            elif want_look:
                 items = look_objects()
                 if items:
                     print("[YOLO] 検出: " + "、".join(f"{p}{n}({c:.2f})" for n, c, p in items[:5]))
