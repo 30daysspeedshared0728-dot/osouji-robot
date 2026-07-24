@@ -119,7 +119,7 @@ BRIDGE_FILE = os.path.join(os.path.expanduser("~"), "osouji_cmd.txt")  # WSL2 RO
 LOG_FILE = os.path.join(os.path.expanduser("~"), "osouji_log.jsonl")  # 会話・命令の記憶(1行1件JSON)。学ぶロボの土台=外付けの記憶。
 # --- ティーチング層(全サブシステム共通の設計。今は音声版。将来YOLO/アームも同じ層に差す) ---
 TEACH_MODE      = os.environ.get("TEACH_MODE", "uncertain")  # "always"=毎回聞く / "uncertain"=自信が低い時だけ / "off"=聞かない
-CONFIRM_LOGPROB = -1.0    # Whisperの自信度(avg_logprob)がこれ未満なら怪しい＝uncertainモードで確認(0に近いほど自信あり)
+CONFIRM_LOGPROB = float(os.environ.get("CONFIRM_LOGPROB", "-1.0"))  # これ未満=怪しい＝uncertainで確認。0に近づけるほど確認が増える(例 CONFIRM_LOGPROB=-0.3)
 
 
 # ============================================================
