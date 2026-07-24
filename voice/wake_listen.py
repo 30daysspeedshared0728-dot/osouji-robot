@@ -34,6 +34,7 @@ import sys
 import glob
 import time
 import queue
+import re
 
 import numpy as np
 import sounddevice as sd
@@ -97,6 +98,8 @@ SYSTEM_PROMPT = (
     "あなたは四輪のお掃除ロボット『オソウジくん』です。"
     "親しみやすく、短く、日本語で答えます。"
     "移動指示(進め/止まれ/戻れ/右/左)を受けたら、元気に復唱して従います。"
+    "返事は音声で読み上げられます。絵文字・記号・箇条書き・マークダウンは一切使わず、"
+    "話し言葉で1〜2文の短さで答えてください。"
 )
 
 COMMAND_KEYWORDS = {
@@ -296,11 +299,27 @@ def ask_gemma(user_text):
 # ============================================================
 # == TTS: 返事をスピーカーで喋る ==
 # ============================================================
+# 絵文字・記号・マークダウンを読み上げると意味不明になるので、喋る前に掃除する。
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF"
+    "\U00002B00-\U00002BFF\U0000FE00-\U0000FE0F\U00002190-\U000021FF]",
+    flags=re.UNICODE)
+
+def clean_for_tts(text):
+    """絵文字・記号・括弧・マークダウンを除去。日本語の長音符ーや句読点(、。！？)は残す。"""
+    t = text or ""
+    t = _EMOJI_RE.sub("", t)                                          # 絵文字を消す
+    t = re.sub(r"[\*\_#`>~|\^=\[\]{}<>()（）「」『』【】・•◆■□●▶►\-]", " ", t)  # 記号・括弧を空白へ
+    t = t.replace("\n", "、")                                         # 改行は読点(ポーズ)に
+    t = re.sub(r"[ \t]+", " ", t)                                     # 連続空白を1つに
+    t = re.sub(r"、{2,}", "、", t)                                    # 読点の連続を1つに
+    return t.strip("、 ")
+
 def speak(text):
     """返事を声に出す。TTS_ENGINEで方式を切替。失敗しても止めない(会話は続ける)。
       espeak   : 外部コマンド espeak-ng。即動くが日本語は粗い(漢字が苦手)。
       openjtalk: pyopenjtalk。日本語を正しく読む(やや機械声)。wav化→aplayで再生。"""
-    text = (text or "").strip()
+    text = clean_for_tts(text)   # ★絵文字・記号を先に掃除(意味不明な読み上げ防止)
     if not text:
         return
     try:
