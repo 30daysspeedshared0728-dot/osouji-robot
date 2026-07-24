@@ -47,6 +47,15 @@ except ImportError:
     serial = None
     list_ports = None
 
+# TTS(返事を声に出す)用。espeak-ngは外部コマンド、pyopenjtalkは任意。
+import subprocess
+import tempfile
+import wave
+try:
+    import pyopenjtalk  # 日本語を正しく読むTTS。無ければespeakにフォールバック。
+except Exception:
+    pyopenjtalk = None
+
 
 # ============================================================
 # == チューニング定数(ここだけ触れば挙動を調整できる) ==
@@ -69,6 +78,7 @@ MIN_SPEECH_SEC   = 0.3    # これ未満の音は「短すぎ」で捨てる。
 WAKE_PORT_HINTS  = ["/dev/ttyACM0", "/dev/ttyACM1"]  # XIAO(ウェイクワード入力)候補
 WAKE_BAUD        = 115200                              # wakenet_hiesp.ino の Serial.begin と一致
 WAKE_TOKEN       = "WAKE"                              # XIAO が吐く合図の1行
+TRIGGER          = os.environ.get("TRIGGER", "wake")  # "wake"=XIAOの「Hi ESP」/ "enter"=Enterで話す(XIAO無しでテスト)。実行時 TRIGGER=enter で切替
 
 UART_PORT        = "/dev/ttyTHS1"   # Jetson40ピンUART(ピン8/10)→Pico。声→サーボの出力。
 UART_BAUD        = 115200           # pico_uart_servo.py と必ず同じ。
@@ -77,7 +87,11 @@ UART_BAUD        = 115200           # pico_uart_servo.py と必ず同じ。
 WHISPER_SIZE     = "small"          # Jetson が重ければ "base" に落とす。
 OLLAMA_URL       = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL     = "gemma2:2b"
-USE_GEMMA        = True             # False にすればコマンドのみ(Gemma呼ばない=軽い)。
+USE_GEMMA        = True             # JetsonにOllama導入済み＝雑談ON。Falseにするとコマンドのみ。
+
+# --- TTS(返事をスピーカーで喋る) ---
+TTS_ENGINE       = os.environ.get("TTS_ENGINE", "espeak")  # "espeak"(即・粗い)/"openjtalk"(要pyopenjtalk・日本語正しく読む)。実行時 TTS_ENGINE=openjtalk で切替
+ESPEAK_VOICE     = "ja"             # espeak-ngの声。"ja+m3"などで声色変更可。
 
 SYSTEM_PROMPT = (
     "あなたは四輪のお掃除ロボット『オソウジくん』です。"
@@ -121,6 +135,14 @@ def on_command(command):
     if _uart is not None:
         try:
             _uart.write((command + "\n").encode())
+            # ★Picoの返事を読む=命令が届いた確証。
+            #   返事あり → UART/サーボ側はOK。動かないなら電源/機構を疑う。
+            #   返事なし → UART未達(配線/GNDゆるみ/TX-RX交差/Pico未起動)。
+            reply = _uart.readline().decode(errors="replace").strip()
+            if reply:
+                print(f"[UART] <- pico: {reply}")
+            else:
+                print("[UART] <- (返事なし=命令が届いてないかも。配線/Pico起動を確認)")
         except Exception as e:
             print(f"[UART] 送信失敗: {e}")
     try:
@@ -272,6 +294,34 @@ def ask_gemma(user_text):
 
 
 # ============================================================
+# == TTS: 返事をスピーカーで喋る ==
+# ============================================================
+def speak(text):
+    """返事を声に出す。TTS_ENGINEで方式を切替。失敗しても止めない(会話は続ける)。
+      espeak   : 外部コマンド espeak-ng。即動くが日本語は粗い(漢字が苦手)。
+      openjtalk: pyopenjtalk。日本語を正しく読む(やや機械声)。wav化→aplayで再生。"""
+    text = (text or "").strip()
+    if not text:
+        return
+    try:
+        if TTS_ENGINE == "openjtalk" and pyopenjtalk is not None:
+            wav, sr = pyopenjtalk.tts(text)                 # float波形, サンプルレート
+            pcm = np.clip(wav, -32768, 32767).astype(np.int16)
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                path = f.name
+            with wave.open(path, "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(int(sr))
+                w.writeframes(pcm.tobytes())
+            subprocess.run(["aplay", "-q", path], check=False)   # espeakと同じALSA経路で鳴らす
+            os.remove(path)
+        else:
+            # espeak-ng(日本語ボイス。粗いが即動く)。1のテストで音が出た経路。
+            subprocess.run(["espeak-ng", "-v", ESPEAK_VOICE, text], check=False)
+    except Exception as e:
+        print(f"[TTS] 喋れず: {e} (会話は続行)")
+
+
+# ============================================================
 # == メインループ ==
 # ============================================================
 def main():
@@ -280,23 +330,29 @@ def main():
     print("準備完了。\n")
 
     init_uart()                      # Pico への送信路(声→サーボ)
-    wake_ser = open_wake_serial()    # XIAO からの WAKE 受信路
+    wake_ser = open_wake_serial() if TRIGGER == "wake" else None  # enterモードならXIAO不要
 
-    print("=== 待機中。「Hi ESP」と言うと聞くモードになります。Ctrl+C で終了。 ===\n")
+    if TRIGGER == "wake":
+        print("=== 待機中。「Hi ESP」と言うと聞くモードになります。Ctrl+C で終了。 ===\n")
+    else:
+        print("=== Enterで話すテストモード(XIAO不要)。Ctrl+C で終了。 ===\n")
     try:
         while True:
             # --- 1. ウェイクワードを待つ ---
-            ok = wait_for_wake(wake_ser)
-            if not ok:
-                # 読み取り不調 -> 開き直す
-                try:
-                    wake_ser.close()
-                except Exception:
-                    pass
-                wake_ser = open_wake_serial()
-                continue
-
-            print("🔔 WAKE 受信! 聞くモード起動。")
+            if TRIGGER == "wake":
+                ok = wait_for_wake(wake_ser)
+                if not ok:
+                    # 読み取り不調 -> 開き直す
+                    try:
+                        wake_ser.close()
+                    except Exception:
+                        pass
+                    wake_ser = open_wake_serial()
+                    continue
+                print("🔔 WAKE 受信! 聞くモード起動。")
+            else:
+                input("▶ Enterで話す…")   # XIAO無しのテスト。Enterがウェイクの代わり。
+                print("🎙️ どうぞ。")
 
             # --- 2. 無音まで自動録音 ---
             audio, reason = record_until_silence()
@@ -318,10 +374,11 @@ def main():
             if cmd:
                 on_command(cmd)
 
-            # --- 5. Gemma 返事 ---
+            # --- 5. Gemma 返事 -> スピーカーで喋る ---
             if USE_GEMMA:
                 reply = ask_gemma(text)
                 print(f"🤖 オソウジくん: {reply}")
+                speak(reply)          # ★ここで声に出す(会話ループ完成)
 
             print("--- 待機に戻ります(「Hi ESP」でまた起こして) ---\n")
 
