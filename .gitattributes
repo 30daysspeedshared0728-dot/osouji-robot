@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Edge Impulse が自動生成した推論SDK（自分で書いたコードではない）。
+# GitHub の言語統計から除外して、実際に書いた Python が見えるようにする。
+firmware/esp32/lib/** linguist-vendored
