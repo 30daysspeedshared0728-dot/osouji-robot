@@ -38,7 +38,7 @@ XIAO ESP32-S3 ──USB(WAKE)──▶ Jetson Orin Nano ──UART──▶ Pico
 | **アクチュエータ制御** | UART (`/dev/ttyTHS1`) → Pico | 双方向。Pico が受信確証を返す |
 | **エピソード記憶** | JSONL 追記 | 毎ターン `{ts, user, command, reply, eval}` を記録 |
 
-メインループは `voice/wake_listen.py` の1本にまとまっています。
+メインループは直下の `main.py` の1本にまとまっています（旧 `voice/wake_listen.py`）。
 
 ---
 
@@ -95,10 +95,10 @@ pip install -r requirements.txt
 
 ```bash
 # ウェイクワード待機で起動（XIAO ESP32-S3 が必要）
-python3 voice/wake_listen.py
+python3 main.py
 
 # XIAO なしで試す（Enterキーで録音開始）
-TRIGGER=enter python3 voice/wake_listen.py
+TRIGGER=enter python3 main.py
 ```
 
 ### 主な環境変数
@@ -117,9 +117,9 @@ TRIGGER=enter python3 voice/wake_listen.py
 
 ```
 osouji-robot/
+├── main.py                     # ★エントリポイント（音声→判断→行動→記憶）
 ├── voice/
-│   ├── wake_listen.py          # メインループ（音声→判断→行動→記憶）
-│   └── voice_chat.py           # 手動テスト用
+│   └── voice_chat.py           # 手動テスト用の簡易版ループ
 ├── perception/
 │   ├── yolo_test.py            # YOLO（ヘッドレス・CPU実行）
 │   ├── gesture_control.py      # MediaPipe ジェスチャー認識

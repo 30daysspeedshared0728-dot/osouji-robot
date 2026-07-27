@@ -14,7 +14,7 @@
 ## プロジェクト概要
 - **四輪お掃除ロボット**。Jetson + ESP32-S3 + Raspberry Pi Pico 2。最終目標はROS2でSLAM自律走行。
 - リポジトリ: https://github.com/30daysspeedshared0728-dot/osouji-robot （Public）
-- 構成: `perception/`(MediaPipe手認識), `voice/`(Whisper+Ollama), `ros2_bridge/`, `docker/`
+- 構成: `main.py`(★エントリポイント/メインループ), `perception/`(MediaPipe手認識), `voice/`(Whisper+Ollama), `actuator/`, `firmware/`, `ros2_bridge/`, `docker/`
 - **動くもの**: `perception/gesture_control.py` … MediaPipe Tasks APIで手認識。**グー=STOP/とまれ、パー=GO/すすめ**。
   - 判定方式は `hand_openness`（手首→指先平均距離÷手のサイズ）。しきい値 `OPEN_STOP_MAX=1.40 / OPEN_GO_MIN=1.80`。デバウンス5フレーム。
   - 確定コマンドは `~/osouji_cmd.txt` に書き出す（Windows開発中の仮設ブリッジ）。将来Jetsonでは**このファイル書き出しをROS2 publishに差し替え**、ブリッジを消す予定。

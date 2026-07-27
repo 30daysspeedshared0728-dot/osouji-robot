@@ -96,7 +96,7 @@ def on_command(command):
     except OSError:
         pass
 
-
+#注意点（弱点）: 辞書の上の行から順番にチェックするため、もし「右じゃなくて左に行って」と言った場合、辞書の順番によっては「右（RIGHT）」が先にヒットしてしまい、ロボットが右に動いてしまうことがあります。
 def extract_command(text):
     for kw, cmd in COMMAND_KEYWORDS.items():
         if kw in text:
