@@ -1,3 +1,7 @@
+> ⚠️ **これは 2026-07-14（Day 1〜2）時点のアーカイブです。**
+> 現在の状態はリポジトリ直下の [README.md](../../README.md) を参照してください。
+> 当時「Jetson 未着」と書かれていますが、その後到着し実機で動作しています。
+
 # 進捗＆引き継ぎメモ（次のチャットはまずこれを読む）
 
 ## このプロジェクトは何
@@ -12,7 +16,7 @@
 
 ## いま動くもの（Day1完了）
 1. `perception/gesture_control.py`（Windows）: MediaPipe Tasks API。パー=GO / グー=STOP。
-   判定を `C:\Users\30day\osouji_cmd.txt` に書き出す。
+   判定を `C:\Users\<user>\osouji_cmd.txt` に書き出す。
 2. `voice/voice_chat.py`（Windows）: faster-whisper で音声認識 → Ollama(Gemma)で会話。
    「進め/止まれ/戻れ/右/左」を抽出して同じファイルに書き出す。
 3. `ros2_bridge/turtle_gesture_bridge.py`（WSL2）: 上のファイルを読んで cmd_vel を publish。
@@ -24,7 +28,7 @@
 WSL側:
   1) export TURTLEBOT3_MODEL=burger
      ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
-  2) python3 "/mnt/c/Users/30day/OneDrive/デスクトップ/RobotProject/osouji-robot/ros2_bridge/turtle_gesture_bridge.py" tb3
+  2) python3 "<repo>/ros2_bridge/turtle_gesture_bridge.py" tb3
 Windows側（どちらか片方。同時に動かすとファイルを取り合うのでNG）:
   3a) python perception\gesture_control.py    （venv有効化: .venv\Scripts\activate）
   3b) python voice\voice_chat.py
