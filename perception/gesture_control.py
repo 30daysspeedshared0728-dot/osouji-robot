@@ -24,6 +24,14 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from PIL import Image, ImageDraw, ImageFont
 
+# --- 共有モジュール ---
+# ★このファイルは `python3 perception/gesture_control.py` と単体で叩くので、
+#   sys.path[0] が perception/ になる。リポジトリ直下を足して common/ と actuator/ を見せる。
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from common import config
+from actuator import robot_io
+
 # Jetson側の処理負荷を抑えるためのカメラ解像度
 CAM_WIDTH = 640
 CAM_HEIGHT = 480
@@ -71,7 +79,7 @@ def draw_texts_jp(frame, items):
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 # --- モデル(自動ダウンロード) ---
-MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+MODEL_DIR = config.MODEL_DIR   # リポジトリ直下の models/ (see_raw_data.py と共有)
 MODEL_PATH = os.path.join(MODEL_DIR, "hand_landmarker.task")
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"
@@ -133,50 +141,15 @@ COMMAND_JP = {"STOP": "とまれ", "GO": "すすめ"}
 COMMAND_COLOR = {"STOP": (0, 0, 255), "GO": (0, 200, 0)}
 
 
-# WSL2側のROS2ノードが読み取る「橋渡し用」ファイル(ASCIIパスで両OSが一致)
-BRIDGE_FILE = os.path.join(os.path.expanduser("~"), "osouji_cmd.txt")
-
-# --- UART: 確定コマンドをPicoへ送り、サーボを動かす ---
-try:
-    import serial  # pyserial (無くてもカメラ確認だけは動くようにする)
-except ImportError:
-    serial = None
-
-UART_PORT = "/dev/ttyTHS1"   # Jetson 40ピンのUART(ピン8/10)。環境で違えば変更。
-UART_BAUD = 115200           # Pico側(pico_uart_servo.py)と必ず同じ値。
-_uart = None                 # 実際の接続。main() の init_uart() で開く。
-
-
-def init_uart():
-    """Picoへの送信用UARTを開く。失敗しても止めない(カメラだけでも動くように)。"""
-    global _uart
-    if serial is None:
-        print("[UART] pyserial 未導入のため送信オフ (pip install pyserial)")
-        return
-    try:
-        _uart = serial.Serial(UART_PORT, UART_BAUD, timeout=0.1)
-        print(f"[UART] {UART_PORT} を開いた -> Picoへ命令を送ります")
-    except Exception as e:
-        _uart = None
-        print(f"[UART] {UART_PORT} を開けず: {e} (UART送信なしで続行)")
-
+# ★BRIDGE_FILE / UART_PORT / UART_BAUD / init_uart() は common/config.py と
+#   actuator/robot_io.py へ移した(main.py と同じものが2箇所にあり、
+#   「Picoの返事を読む」改良が main.py にしか入っていなかったため)
 
 def on_command(command):
-    """コマンド確定時のフック。print + UART送信 + ブリッジ用ファイル書き出し。
-    パー=GO / グー=STOP が、UART経由でPicoのサーボを動かす。"""
+    """コマンド確定時のフック。パー=GO / グー=STOP を Pico へ送る。
+    送信は actuator/robot_io.py に一本化(=Picoの返事も読むので受信確証が取れる)。"""
     print(f"[COMMAND] {command}  ({COMMAND_JP[command]})")
-    # ★Picoへ UART で送る(繋がっていれば)。ここが手→サーボの本線。
-    if _uart is not None:
-        try:
-            _uart.write((command + "\n").encode())
-        except Exception as e:
-            print(f"[UART] 送信失敗: {e}")
-    # 従来のブリッジ用ファイルにも残す(WSL2 ROS2用。害はない)
-    try:
-        with open(BRIDGE_FILE, "w", encoding="utf-8") as f:
-            f.write(command)
-    except OSError:
-        pass
+    robot_io.send_command(command)
 
 
 def draw_hand(frame, landmarks):
@@ -201,7 +174,7 @@ def open_camera():
 
 
 def main():
-    init_uart()      # Picoへの送信路を開く(失敗しても止めずに続行)
+    robot_io.init_uart()   # Picoへの送信路を開く(失敗しても止めずに続行)
     ensure_model()
     # 日本語を含むパスだと MediaPipe の内部(C++)がファイルを開けないため、
     # Python 側でバイト列として読み込んで渡す(パス問題を回避)。
@@ -277,8 +250,7 @@ def main():
 
     cap.release()
     cv2.destroyAllWindows()
-    if _uart is not None:
-        _uart.close()
+    robot_io.close_uart()
 
 
 if __name__ == "__main__":

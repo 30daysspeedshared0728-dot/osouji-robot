@@ -74,7 +74,15 @@ Jetson Orin Nano 8GB では gemma2 と moondream の同時常駐ができませ�
 - **YOLO は CPU / LLM は GPU** で棲み分け
   （Jetson で YOLO を GPU 実行すると統合メモリの競合と PyTorch の NVML バグを踏むため）
 
-### 4. ティーチング層 — 自信がない時は聞き返して記録する
+### 4. 設定値と入出力の一元化
+
+`UART_BAUD` のような値が4ファイルに散っており、食い違っても「なぜか通信できない」としか表に出ない状態でした。`common/config.py` に集約し、Pico への送信は `actuator/robot_io.py` に一本化しています。
+
+実際にこれで一件バグが見つかりました。「Pico の返事を読んで受信確証を取る」処理が `main.py` にしか入っておらず、ジェスチャー経由の送信は届いたか分からないままでした。**重複の害は「2箇所にある」ことではなく「片方だけ直る」こと**だと考えています。
+
+なお `firmware/pico/pico_uart_servo.py` のボーレートだけは別マシン・別言語のため集約できません。ここは `config.py` にコメントで明示しています。
+
+### 5. ティーチング層 — 自信がない時は聞き返して記録する
 
 音声認識の `avg_logprob` や YOLO のスコアが閾値を下回った場合、断定せずユーザーに確認し、訂正内容を記憶に残します。判定は各サブシステム側で bool に変換して渡す共通設計です。
 
@@ -118,20 +126,24 @@ TRIGGER=enter python3 main.py
 ```
 osouji-robot/
 ├── main.py                     # ★エントリポイント（音声→判断→行動→記憶）
-├── voice/
-│   └── voice_chat.py           # 手動テスト用の簡易版ループ
-├── perception/
-│   ├── yolo_test.py            # YOLO（ヘッドレス・CPU実行）
-│   ├── gesture_control.py      # MediaPipe ジェスチャー認識
-│   └── see_raw_data.py
+├── common/
+│   └── config.py               # 全体で共有する設定値（UART・パス・モデル名）
 ├── actuator/
-│   └── jetson_send_uart.py     # Jetson→Pico UART送信
+│   └── robot_io.py             # Picoへの送信口（送信＋受信確証＋ブリッジ書き出し）
+├── perception/
+│   └── gesture_control.py      # MediaPipe: グー/パー → とまれ/すすめ
 ├── firmware/
 │   ├── wakenet_hiesp/          # XIAO ESP32-S3 ウェイクワード（Arduino）
 │   ├── pico/                   # Pico 2 サーボ制御（MicroPython）
 │   └── esp32/                  # 音声データ収録用（実験）
 ├── ros2_bridge/
 │   └── turtle_gesture_bridge.py  # ジェスチャー → ROS2 /cmd_vel
+├── tools/                      # 手で動かす確認用スクリプト（自動テストではない）
+│   ├── yolo_test.py            # YOLO 単発推論（ヘッドレス）
+│   ├── see_raw_data.py         # 手の生ランドマーク表示
+│   ├── voice_chat.py           # 旧世代の簡易ループ（保存用）
+│   └── jetson_send_uart.py     # UART 単体の疎通確認
+├── models/                     # 自動ダウンロード（Git管理外）
 ├── docker/                     # ⚠️ 未検証（下記参照）
 └── docs/archive/               # 開発初期の記録
 ```

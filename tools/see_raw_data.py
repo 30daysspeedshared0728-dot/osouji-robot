@@ -26,7 +26,11 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # --- モデル(gesture_control.py と同じものを使い回す) ---
-MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+# ★tools/ から叩くのでリポジトリ直下を sys.path に足す(モデル置き場を gesture_control と共有)
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from common import config
+MODEL_DIR = config.MODEL_DIR   # リポジトリ直下の models/
 MODEL_PATH = os.path.join(MODEL_DIR, "hand_landmarker.task")
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"

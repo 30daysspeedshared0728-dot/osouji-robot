@@ -43,6 +43,10 @@ import sounddevice as sd
 import requests
 from faster_whisper import WhisperModel
 
+# --- 共有モジュール(設定値とPicoへの送信口を1箇所に集約) ---
+from common import config
+from actuator import robot_io
+
 try:
     import serial  # pyserial。無くても認識だけは動くようにする。
     from serial.tools import list_ports
@@ -83,13 +87,12 @@ WAKE_BAUD        = 115200                              # wakenet_hiesp.ino の S
 WAKE_TOKEN       = "WAKE"                              # XIAO が吐く合図の1行
 TRIGGER          = os.environ.get("TRIGGER", "wake")  # "wake"=XIAOの「Hi ESP」/ "enter"=Enterで話す(XIAO無しでテスト)。実行時 TRIGGER=enter で切替
 
-UART_PORT        = "/dev/ttyTHS1"   # Jetson40ピンUART(ピン8/10)→Pico。声→サーボの出力。
-UART_BAUD        = 115200           # pico_uart_servo.py と必ず同じ。
+# ★UART_PORT / UART_BAUD は common/config.py に移した(4箇所に散っていたため)
 
 # --- 認識/返事 ---
 WHISPER_SIZE     = "small"          # Jetson が重ければ "base" に落とす。
-OLLAMA_URL       = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL     = "gemma2:2b"
+OLLAMA_URL       = config.OLLAMA_URL      # 実体は common/config.py
+OLLAMA_MODEL     = config.OLLAMA_MODEL
 USE_GEMMA        = True             # JetsonにOllama導入済み＝雑談ON。Falseにするとコマンドのみ。
 USE_LLM_ROUTER   = os.environ.get("ROUTER", "1") == "1"  # Gemmaに「今見る必要ある?」を判定させる。ROUTER=0でキーワードのみ
 
@@ -114,10 +117,10 @@ COMMAND_KEYWORDS = {
     "左": "LEFT", "ひだり": "LEFT",
 }
 
-BRIDGE_FILE = os.path.join(os.path.expanduser("~"), "osouji_cmd.txt")  # WSL2 ROS2用(害なし)
+BRIDGE_FILE = config.BRIDGE_FILE  # 実体は common/config.py
 
 # --- 記憶(ログ) / human-in-the-loop ---
-LOG_FILE = os.path.join(os.path.expanduser("~"), "osouji_log.jsonl")  # 会話・命令の記憶(1行1件JSON)。学ぶロボの土台=外付けの記憶。
+LOG_FILE = config.LOG_FILE  # 会話・命令の記憶(1行1件JSON)。実体は common/config.py
 # --- ティーチング層(全サブシステム共通の設計。今は音声版。将来YOLO/アームも同じ層に差す) ---
 TEACH_MODE      = os.environ.get("TEACH_MODE", "uncertain")  # "always"=毎回聞く / "uncertain"=自信が低い時だけ / "off"=聞かない
 CONFIRM_LOGPROB = float(os.environ.get("CONFIRM_LOGPROB", "-1.0"))  # これ未満=怪しい＝uncertainで確認。0に近づけるほど確認が増える(例 CONFIRM_LOGPROB=-0.3)
@@ -134,43 +137,10 @@ VLM_KEYWORDS    = ("詳しく", "くわしく", "説明して", "どんな様子
 # ============================================================
 # == UART: 確定コマンドを Pico へ送ってサーボを動かす ==
 # ============================================================
-_uart = None
-
-def init_uart():
-    """Picoへの送信用UARTを開く。失敗しても止めない(認識だけでも動くように)。"""
-    global _uart
-    if serial is None:
-        print("[UART] pyserial 未導入のため送信オフ (pip install pyserial)")
-        return
-    try:
-        _uart = serial.Serial(UART_PORT, UART_BAUD, timeout=0.1)
-        print(f"[UART] {UART_PORT} を開いた -> Pico へ命令を送ります")
-    except Exception as e:
-        _uart = None
-        print(f"[UART] {UART_PORT} を開けず: {e} (UART送信なしで続行)")
-
-
 def on_command(command):
-    """print + UART送信 + ブリッジ用ファイル書き出し(gesture/voice_chatと同じ)。"""
+    """コマンド確定時のフック。表示は各サブシステム側、送信は actuator/robot_io.py に一本化。"""
     print(f"[COMMAND] {command}")
-    if _uart is not None:
-        try:
-            _uart.write((command + "\n").encode())
-            # ★Picoの返事を読む=命令が届いた確証。
-            #   返事あり → UART/サーボ側はOK。動かないなら電源/機構を疑う。
-            #   返事なし → UART未達(配線/GNDゆるみ/TX-RX交差/Pico未起動)。
-            reply = _uart.readline().decode(errors="replace").strip()
-            if reply:
-                print(f"[UART] <- pico: {reply}")
-            else:
-                print("[UART] <- (返事なし=命令が届いてないかも。配線/Pico起動を確認)")
-        except Exception as e:
-            print(f"[UART] 送信失敗: {e}")
-    try:
-        with open(BRIDGE_FILE, "w", encoding="utf-8") as f:
-            f.write(command)
-    except OSError:
-        pass
+    robot_io.send_command(command)
 
 
 def extract_command(text):
@@ -538,7 +508,7 @@ def main():
     model = WhisperModel(WHISPER_SIZE, device="cpu", compute_type="int8")
     print("準備完了。\n")
 
-    init_uart()                      # Pico への送信路(声→サーボ)
+    robot_io.init_uart()             # Pico への送信路(声→サーボ)
     wake_ser = open_wake_serial() if TRIGGER == "wake" else None  # enterモードならXIAO不要
 
     if TRIGGER == "wake":
@@ -635,8 +605,7 @@ def main():
     except KeyboardInterrupt:
         print("\n終了します。おつかれさま!")
     finally:
-        if _uart is not None:
-            _uart.close()
+        robot_io.close_uart()
         try:
             wake_ser.close()
         except Exception:
